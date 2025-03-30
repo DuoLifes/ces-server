@@ -111,6 +111,45 @@ class LabelCompany(Base):
     # 与Company的关系
     company = relationship("Company")
 
+# 账号模型 - 扩展User模型，增加更多业务字段
+class UserAccount(Base):
+    __tablename__ = "user_accounts"
+    
+    id = Column(Integer, primary_key=True, index=True)
+    account = Column(String, unique=True, index=True)  # 用户账号
+    name = Column(String, index=True)                  # 用户名称
+    password = Column(String)                          # 密码
+    tenant_id = Column(Integer, ForeignKey("tenants.id"))  # 运营商ID
+    company_id = Column(Integer, ForeignKey("companies.id"))  # 局点ID
+    group_id = Column(Integer, ForeignKey("groups.id"))  # 单一营销组ID (保留兼容性)
+    role_id = Column(Integer, ForeignKey("roles.id"))  # 角色ID
+    is_enabled = Column(Integer, default=1)  # 是否启用 1:启用, 0:禁用
+    expire_date = Column(DateTime, nullable=True)  # 有效期至
+    create_time = Column(DateTime, default=datetime.datetime.now)  # 创建时间
+    update_time = Column(DateTime, default=datetime.datetime.now, onupdate=datetime.datetime.now)  # 更新时间
+    creator = Column(String, default="管理员")  # 创建人
+    
+    # 关系
+    tenant = relationship("Tenant")
+    company = relationship("Company")
+    group = relationship("Group")
+    role = relationship("Role")
+    # 与AccountGroup的关系
+    groups = relationship("AccountGroup", back_populates="account")
+
+# 账号与营销组的关联表
+class AccountGroup(Base):
+    __tablename__ = "account_groups"
+    
+    id = Column(Integer, primary_key=True, index=True)
+    account_id = Column(Integer, ForeignKey("user_accounts.id"))  # 账号ID
+    group_id = Column(Integer, ForeignKey("groups.id"))  # 营销组ID
+    
+    # 与UserAccount的关系
+    account = relationship("UserAccount", back_populates="groups")
+    # 与Group的关系
+    group = relationship("Group")
+
 # 确保更新数据库表结构
 print("正在更新数据库表结构...")
 Base.metadata.create_all(bind=engine) 

@@ -3340,6 +3340,565 @@ async def label_configure_company(request: Request, db: Session = Depends(get_db
             "data": {}
         }
 
+# 账号管理相关模型
+class AccountItem(BaseModel):
+    id: int
+    tenantId: int
+    tenantName: str
+    companyId: int
+    companyName: str
+    username: str
+    realName: str
+    roleId: int
+    roleName: str
+    marketingGroups: List[int] = []
+    marketingGroupNames: str
+    enabled: int
+    expireDate: Optional[str] = None
+    expired: int
+    creator: str
+    createTime: Optional[str] = None
+    updateTime: Optional[str] = None
+
+class AccountPageData(BaseModel):
+    records: List[AccountItem]
+    total: int
+    size: int
+    current: int
+    pages: int
+
+class AccountPageResponse(BaseModel):
+    code: str
+    msg: str
+    data: AccountPageData
+
+class AccountPageRequest(BaseModel):
+    tenantId: Optional[int] = None
+    companyId: Optional[int] = None
+    marketingGroups: Optional[List[int]] = None
+    username: Optional[str] = ""
+    realName: Optional[str] = ""
+    enabled: Optional[int] = None
+    expired: Optional[int] = None
+    pageNo: Optional[int] = 1
+    pageSize: Optional[int] = 10
+
+class AccountAddRequest(BaseModel):
+    tenantId: int
+    companyId: int
+    username: str
+    realName: str
+    password: str
+    roleId: int
+    marketingGroups: List[int] = []
+    enabled: int = 1
+    expireDate: Optional[str] = None
+
+class AccountAddResponse(BaseModel):
+    code: str
+    msg: str
+    data: Optional[Dict] = {}
+
+class AccountModifyRequest(BaseModel):
+    id: int
+    tenantId: Optional[int] = None
+    companyId: Optional[int] = None
+    username: Optional[str] = None
+    realName: Optional[str] = None
+    password: Optional[str] = None
+    roleId: Optional[int] = None
+    marketingGroups: Optional[List[int]] = None
+    enabled: Optional[int] = None
+    expireDate: Optional[str] = None
+
+class AccountModifyResponse(BaseModel):
+    code: str
+    msg: str
+    data: Optional[Dict] = {}
+
+class AccountDeleteResponse(BaseModel):
+    code: str
+    msg: str
+    data: Optional[Dict] = {}
+
+# 常量定义
+ENABLED_STATUS = {
+    1: "启用",
+    2: "禁用"
+}
+
+EXPIRED_STATUS = {
+    1: "已到期",
+    2: "未到期"
+}
+
+# 账号管理相关API
+@app.post("/ces/account/list/page")
+async def account_list_page(request: Request, db: Session = Depends(get_db)):
+    try:
+        # 获取请求参数
+        request_data = await request.json()
+        tenant_id = request_data.get("tenantId")
+        company_id = request_data.get("companyId")
+        marketing_groups = request_data.get("marketingGroups", [])
+        username = request_data.get("username", "")
+        real_name = request_data.get("realName", "")
+        enabled = request_data.get("enabled")
+        expired = request_data.get("expired")
+        page_no = request_data.get("pageNo", 1)
+        page_size = request_data.get("pageSize", 10)
+        
+        # 查询条件
+        query = db.query(models.UserAccount)
+        
+        # 添加过滤条件
+        if tenant_id is not None:
+            query = query.filter(models.UserAccount.tenant_id == tenant_id)
+        
+        if company_id is not None:
+            query = query.filter(models.UserAccount.company_id == company_id)
+        
+        if username:
+            query = query.filter(models.UserAccount.account.like(f"%{username}%"))
+        
+        if real_name:
+            query = query.filter(models.UserAccount.name.like(f"%{real_name}%"))
+        
+        # 处理是否启用参数 (处理布尔值或整数)
+        if enabled is not None:
+            if isinstance(enabled, bool):
+                query = query.filter(models.UserAccount.is_enabled == (1 if enabled else 0))
+            else:
+                query = query.filter(models.UserAccount.is_enabled == (1 if enabled == 1 else 0))
+        
+        # 处理是否到期参数 (处理布尔值或整数)
+        if expired is not None:
+            current_time = datetime.now()
+            if isinstance(expired, bool):
+                if expired:  # 已到期
+                    query = query.filter(models.UserAccount.expire_date < current_time)
+                else:  # 未到期
+                    query = query.filter(
+                        or_(
+                            models.UserAccount.expire_date >= current_time,
+                            models.UserAccount.expire_date == None
+                        )
+                    )
+            else:
+                if expired == 1:  # 已到期
+                    query = query.filter(models.UserAccount.expire_date < current_time)
+                elif expired == 2:  # 未到期
+                    query = query.filter(
+                        or_(
+                            models.UserAccount.expire_date >= current_time,
+                            models.UserAccount.expire_date == None
+                        )
+                    )
+        
+        # 如果提供了营销组ID，添加过滤条件 (使用关联表查询)
+        if marketing_groups and len(marketing_groups) > 0:
+            # 使用子查询获取与指定营销组关联的账号ID
+            account_ids = db.query(models.AccountGroup.account_id).filter(
+                models.AccountGroup.group_id.in_(marketing_groups)
+            ).distinct().all()
+            
+            account_ids = [item[0] for item in account_ids]
+            
+            if account_ids:
+                query = query.filter(models.UserAccount.id.in_(account_ids))
+            else:
+                # 没有找到相关账号，返回空结果
+                return {
+                    "code": "00000",
+                    "msg": "成功",
+                    "data": {
+                        "records": [],
+                        "total": 0,
+                        "size": page_size,
+                        "current": page_no,
+                        "pages": 0
+                    }
+                }
+        
+        # 计算总数
+        total = query.count()
+        
+        # 分页
+        accounts = query.offset((page_no - 1) * page_size).limit(page_size).all()
+        
+        # 构建结果
+        records = []
+        for account in accounts:
+            # 查询关联的租户
+            tenant = db.query(models.Tenant).filter(
+                models.Tenant.id == account.tenant_id
+            ).first()
+            
+            # 查询关联的局点
+            company = db.query(models.Company).filter(
+                models.Company.id == account.company_id
+            ).first()
+            
+            # 查询关联的角色
+            role = db.query(models.Role).filter(
+                models.Role.id == account.role_id
+            ).first()
+            
+            # 查询关联的营销组 (从关联表获取全部营销组)
+            group_ids = []
+            group_names = []
+            
+            # 从关联表获取全部营销组
+            account_groups = db.query(models.AccountGroup).filter(
+                models.AccountGroup.account_id == account.id
+            ).all()
+            
+            for account_group in account_groups:
+                group = db.query(models.Group).filter(
+                    models.Group.id == account_group.group_id
+                ).first()
+                
+                if group:
+                    group_ids.append(group.id)
+                    group_names.append(group.name)
+            
+            # 判断是否过期
+            expired_status = 0
+            if account.expire_date:
+                if account.expire_date < datetime.now():
+                    expired_status = 1  # 已过期
+                else:
+                    expired_status = 2  # 未过期
+            else:
+                expired_status = 2  # 未过期
+            
+            records.append({
+                "id": account.id,
+                "tenantId": account.tenant_id,
+                "tenantName": tenant.name if tenant else "",
+                "companyId": account.company_id,
+                "companyName": company.name if company else "",
+                "username": account.account,
+                "realName": account.name,
+                "roleId": account.role_id,
+                "roleName": role.name if role else "",
+                "marketingGroups": group_ids,
+                "marketingGroupNames": group_names,
+                "enabled": account.is_enabled,
+                "expireDate": account.expire_date.strftime("%Y-%m-%d %H:%M:%S") if account.expire_date else "",
+                "expired": expired_status,
+                "creator": account.creator,
+                "createTime": account.create_time.strftime("%Y-%m-%d %H:%M:%S") if account.create_time else "",
+                "updateTime": account.update_time.strftime("%Y-%m-%d %H:%M:%S") if account.update_time else ""
+            })
+        
+        # 计算总页数
+        pages = math.ceil(total / page_size) if page_size > 0 else 0
+        
+        response_data = {
+            "records": records,
+            "total": total,
+            "size": page_size,
+            "current": page_no,
+            "pages": pages
+        }
+        
+        return {
+            "code": "00000",
+            "msg": "成功",
+            "data": response_data
+        }
+    except Exception as e:
+        return {
+            "code": "A0002",
+            "msg": f"查询失败: {str(e)}",
+            "data": {
+                "records": [],
+                "total": 0,
+                "size": 0,
+                "current": 0,
+                "pages": 0
+            }
+        }
+
+@app.post("/ces/account/add")
+async def account_add(request: Request, db: Session = Depends(get_db)):
+    try:
+        # 获取请求参数
+        request_data = await request.json()
+        tenant_id = request_data.get("tenantId")
+        company_id = request_data.get("companyId")
+        username = request_data.get("username", "")
+        real_name = request_data.get("realName", "")
+        password = request_data.get("password", "123456")  # 使用默认密码123456
+        role_id = request_data.get("roleId")
+        marketing_groups = request_data.get("marketingGroups", [])
+        enabled = request_data.get("enabled", 1)
+        validity_type = request_data.get("validityType", "custom")
+        expire_date_str = request_data.get("expireDate")
+        
+        if not username:
+            return {
+                "code": "A0001", 
+                "msg": "用户账号不能为空",
+                "data": {}
+            }
+        
+        if not real_name:
+            return {
+                "code": "A0001",
+                "msg": "用户名称不能为空",
+                "data": {}
+            }
+        
+        if not tenant_id:
+            return {
+                "code": "A0001",
+                "msg": "运营商ID不能为空",
+                "data": {}
+            }
+        
+        if not company_id:
+            return {
+                "code": "A0001",
+                "msg": "局点ID不能为空",
+                "data": {}
+            }
+        
+        # 检查用户账号是否已存在
+        existing_account = db.query(models.UserAccount).filter(
+            models.UserAccount.account == username
+        ).first()
+        
+        if existing_account:
+            return {
+                "code": "A0001",
+                "msg": f"用户账号 '{username}' 已存在",
+                "data": {}
+            }
+        
+        # 处理过期日期
+        expire_date = None
+        if expire_date_str:
+            try:
+                expire_date = datetime.strptime(expire_date_str, "%Y-%m-%d %H:%M:%S")
+            except ValueError:
+                try:
+                    expire_date = datetime.strptime(expire_date_str, "%Y-%m-%d")
+                except ValueError:
+                    return {
+                        "code": "A0001",
+                        "msg": "过期日期格式错误，请使用YYYY-MM-DD HH:MM:SS或YYYY-MM-DD格式",
+                        "data": {}
+                    }
+        
+        # 提取主营销组ID（如果有多个，取第一个用于兼容旧字段）
+        group_id = None
+        if isinstance(marketing_groups, list) and len(marketing_groups) > 0:
+            group_id = marketing_groups[0]
+        
+        # 创建新账号
+        new_account = models.UserAccount(
+            account=username,
+            name=real_name,
+            password=password,
+            tenant_id=tenant_id,
+            company_id=company_id,
+            role_id=role_id if role_id else 1,  # 如果未提供角色ID，使用默认值1
+            group_id=group_id,  # 保留兼容旧代码，只保存第一个营销组ID
+            is_enabled=enabled,
+            expire_date=expire_date
+        )
+        
+        db.add(new_account)
+        db.commit()
+        db.refresh(new_account)
+        
+        # 创建账号-营销组关联
+        if isinstance(marketing_groups, list) and marketing_groups:
+            for group_id in marketing_groups:
+                account_group = models.AccountGroup(
+                    account_id=new_account.id,
+                    group_id=group_id
+                )
+                db.add(account_group)
+            
+            db.commit()
+        
+        return {
+            "code": "00000",
+            "msg": "添加成功",
+            "data": {}
+        }
+    except Exception as e:
+        db.rollback()
+        return {
+            "code": "A0002",
+            "msg": f"添加失败: {str(e)}",
+            "data": {}
+        }
+
+@app.post("/ces/account/modify")
+async def account_modify(request: Request, db: Session = Depends(get_db)):
+    try:
+        # 获取请求参数
+        request_data = await request.json()
+        account_id = request_data.get("id")
+        tenant_id = request_data.get("tenantId")
+        company_id = request_data.get("companyId")
+        username = request_data.get("username")
+        real_name = request_data.get("realName")
+        password = request_data.get("password")
+        role_id = request_data.get("roleId")
+        marketing_groups = request_data.get("marketingGroups")
+        enabled = request_data.get("enabled")
+        validity_type = request_data.get("validityType")
+        expire_date_str = request_data.get("expireDate")
+        
+        if not account_id:
+            return {
+                "code": "A0001",
+                "msg": "账号ID不能为空",
+                "data": {}
+            }
+        
+        # 查询账号是否存在
+        account = db.query(models.UserAccount).filter(models.UserAccount.id == account_id).first()
+        if not account:
+            return {
+                "code": "A0001",
+                "msg": f"账号ID {account_id} 不存在",
+                "data": {}
+            }
+        
+        # 如果提供了新的用户账号，检查是否与其他账号重名
+        if username is not None and username != account.account:
+            existing_account = db.query(models.UserAccount).filter(
+                models.UserAccount.account == username,
+                models.UserAccount.id != account_id
+            ).first()
+            
+            if existing_account:
+                return {
+                    "code": "A0001",
+                    "msg": f"用户账号 '{username}' 已存在",
+                    "data": {}
+                }
+        
+        # 更新账号信息
+        if username is not None:
+            account.account = username
+        
+        if real_name is not None:
+            account.name = real_name
+        
+        if password is not None:
+            account.password = password  # 实际应用中应该加密存储
+        
+        if tenant_id is not None:
+            account.tenant_id = tenant_id
+        
+        if company_id is not None:
+            account.company_id = company_id
+        
+        if role_id is not None:
+            account.role_id = role_id
+        
+        # 处理营销组
+        if marketing_groups is not None:
+            # 更新主营销组字段（兼容性）
+            if isinstance(marketing_groups, list) and len(marketing_groups) > 0:
+                account.group_id = marketing_groups[0]  # 保留旧字段兼容性，只保存第一个
+            else:
+                account.group_id = None  # 如果是空列表，则清空营销组
+            
+            # 清除旧的账号-营销组关联
+            db.query(models.AccountGroup).filter(
+                models.AccountGroup.account_id == account_id
+            ).delete()
+            
+            # 创建新的账号-营销组关联
+            if isinstance(marketing_groups, list) and marketing_groups:
+                for group_id in marketing_groups:
+                    account_group = models.AccountGroup(
+                        account_id=account_id,
+                        group_id=group_id
+                    )
+                    db.add(account_group)
+        
+        if enabled is not None:
+            account.is_enabled = enabled
+        
+        # 处理过期日期
+        if expire_date_str is not None:
+            if expire_date_str:
+                try:
+                    expire_date = datetime.strptime(expire_date_str, "%Y-%m-%d %H:%M:%S")
+                    account.expire_date = expire_date
+                except ValueError:
+                    try:
+                        expire_date = datetime.strptime(expire_date_str, "%Y-%m-%d")
+                        account.expire_date = expire_date
+                    except ValueError:
+                        return {
+                            "code": "A0001",
+                            "msg": "过期日期格式错误，请使用YYYY-MM-DD HH:MM:SS或YYYY-MM-DD格式",
+                            "data": {}
+                        }
+            else:
+                account.expire_date = None
+        
+        # 更新修改时间
+        account.update_time = datetime.now()
+        
+        db.commit()
+        
+        return {
+            "code": "00000",
+            "msg": "修改成功",
+            "data": {}
+        }
+    except Exception as e:
+        db.rollback()
+        return {
+            "code": "A0002",
+            "msg": f"修改失败: {str(e)}",
+            "data": {}
+        }
+
+@app.delete("/ces/account/delete")
+async def account_delete(id: int, db: Session = Depends(get_db)):
+    try:
+        # 查询账号是否存在
+        account = db.query(models.UserAccount).filter(models.UserAccount.id == id).first()
+        
+        if not account:
+            return {
+                "code": "A0001",
+                "msg": f"账号ID {id} 不存在",
+                "data": {}
+            }
+        
+        # 删除账号-营销组关联
+        db.query(models.AccountGroup).filter(models.AccountGroup.account_id == id).delete()
+        
+        # 删除账号
+        db.delete(account)
+        db.commit()
+        
+        return {
+            "code": "00000",
+            "msg": "删除成功",
+            "data": {}
+        }
+    except Exception as e:
+        db.rollback()
+        return {
+            "code": "A0002",
+            "msg": f"删除失败: {str(e)}",
+            "data": {}
+        }
+
 if __name__ == "__main__":
     import uvicorn
     # 确保数据库中有测试用户
