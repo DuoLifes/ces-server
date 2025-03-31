@@ -1,4 +1,4 @@
-from sqlalchemy import Column, Integer, String, create_engine, ForeignKey, Text, DateTime
+from sqlalchemy import Column, Integer, String, create_engine, ForeignKey, Text, DateTime, Table
 from sqlalchemy.ext.declarative import declarative_base
 from sqlalchemy.orm import sessionmaker, relationship
 import datetime
@@ -13,8 +13,39 @@ class User(Base):
     __tablename__ = "users"
 
     id = Column(Integer, primary_key=True, index=True)
-    username = Column(String, unique=True, index=True)
-    hashed_password = Column(String)
+    username = Column(String, unique=True, index=True)  # 用户账号
+    name = Column(String)  # 用户姓名
+    hashed_password = Column(String)  # 密码
+    status = Column(Integer, default=1)  # 0: 关闭, 1: 开启
+    effective_day = Column(String)  # 账户有效期
+    expire = Column(Integer, default=1)  # 1: 未到期, 2: 已到期
+    tenant_id = Column(Integer, ForeignKey("tenants.id"))  # 运营商ID
+    company_id = Column(Integer, ForeignKey("companies.id"))  # 局点ID
+    create_time = Column(DateTime, default=datetime.datetime.now)  # 创建时间
+    update_time = Column(DateTime, default=datetime.datetime.now, onupdate=datetime.datetime.now)  # 更新时间
+    operator_name = Column(String, default="管理员")  # 操作人
+
+    # 关联关系
+    tenant = relationship("Tenant", backref="users")
+    company = relationship("Company", backref="users")
+    groups = relationship("Group", secondary="user_groups", back_populates="users")
+    roles = relationship("Role", secondary="user_roles", back_populates="users")
+
+# 用户-班组关联表
+user_groups = Table(
+    "user_groups",
+    Base.metadata,
+    Column("user_id", Integer, ForeignKey("users.id")),
+    Column("group_id", Integer, ForeignKey("groups.id"))
+)
+
+# 用户-角色关联表
+user_roles = Table(
+    "user_roles",
+    Base.metadata,
+    Column("user_id", Integer, ForeignKey("users.id")),
+    Column("role_id", Integer, ForeignKey("roles.id"))
+)
 
 class Tenant(Base):
     __tablename__ = "tenants"
@@ -75,6 +106,8 @@ class Group(Base):
     
     # 与Company的关系
     company = relationship("Company")
+    # 与User的关系
+    users = relationship("User", secondary="user_groups", back_populates="groups")
 
 class Role(Base):
     __tablename__ = "roles"
@@ -85,6 +118,9 @@ class Role(Base):
     create_time = Column(DateTime, default=datetime.datetime.now)
     update_time = Column(DateTime, default=datetime.datetime.now, onupdate=datetime.datetime.now)
     operator_name = Column(String, default="管理员")
+    
+    # 与User的关系
+    users = relationship("User", secondary="user_roles", back_populates="roles")
 
 class Label(Base):
     __tablename__ = "labels"

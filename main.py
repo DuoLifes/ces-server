@@ -3899,6 +3899,329 @@ async def account_delete(id: int, db: Session = Depends(get_db)):
             "data": {}
         }
 
+# 用户分页查询请求模型
+class UserPageRequest(BaseModel):
+    companyId: Optional[int] = 0
+    expire: Optional[int] = 0
+    groupId: Optional[int] = 0
+    name: Optional[str] = ""
+    pageNo: Optional[int] = 0
+    pageSize: Optional[int] = 0
+    status: Optional[int] = 0
+    tenantId: Optional[int] = 0
+    username: Optional[str] = ""
+
+# 用户详情项模型
+class UserDetailItem(BaseModel):
+    id: int
+    username: str
+    name: str
+    status: int
+    effectiveDay: str
+    expire: int
+    tenantId: int
+    tenantName: str
+    companyId: int
+    companyName: str
+    groupIds: List[int]
+    groupNames: List[str]
+    roleNames: List[str]
+    createTime: Optional[datetime] = None
+    updateTime: Optional[datetime] = None
+    operatorName: str
+
+# 用户分页数据模型
+class UserPageData(BaseModel):
+    records: List[UserDetailItem]
+    total: int
+    size: int
+    current: int
+    pages: int
+
+# 用户分页查询响应模型
+class UserPageResponse(BaseModel):
+    code: str
+    msg: str
+    data: UserPageData
+
+# 新增用户请求模型
+class UserAddRequest(BaseModel):
+    companyId: int
+    effectiveDay: str
+    name: str
+    username: str
+
+# 新增用户响应模型
+class UserAddResponse(BaseModel):
+    code: str
+    msg: str
+    data: Dict = {}
+
+# 修改用户请求模型
+class UserModifyRequest(BaseModel):
+    id: int
+    name: str
+    effectiveDay: str
+
+# 修改用户响应模型
+class UserModifyResponse(BaseModel):
+    code: str
+    msg: str
+    data: Dict = {}
+
+# 修改用户状态请求模型
+class UserStatusRequest(BaseModel):
+    id: int
+    status: int
+
+# 用户详情响应模型
+class UserDetailResponse(BaseModel):
+    code: str
+    msg: str
+    data: Dict
+
+# 配置用户有效期请求模型
+class UserEffectiveDayRequest(BaseModel):
+    id: int
+    effectiveDay: str
+    name: str
+
+# 配置用户班组请求模型
+class UserGroupRequest(BaseModel):
+    id: int
+    groupIds: List[int]
+
+# 配置用户角色请求模型
+class UserRoleRequest(BaseModel):
+    id: int
+    roleIds: List[int]
+
+# 用户相关接口
+@app.post("/ces/user/list/page", response_model=UserPageResponse)
+async def user_list_page(request: UserPageRequest, db: Session = Depends(get_db)):
+    try:
+        # 构建查询条件
+        query = db.query(models.User)
+        
+        if request.companyId > 0:
+            query = query.filter(models.User.company_id == request.companyId)
+        if request.tenantId > 0:
+            query = query.filter(models.User.tenant_id == request.tenantId)
+        if request.status > 0:
+            query = query.filter(models.User.status == request.status)
+        if request.expire > 0:
+            query = query.filter(models.User.expire == request.expire)
+        if request.name:
+            query = query.filter(models.User.name.like(f"%{request.name}%"))
+        if request.username:
+            query = query.filter(models.User.username.like(f"%{request.username}%"))
+        if request.groupId > 0:
+            query = query.join(models.user_groups).filter(models.user_groups.c.group_id == request.groupId)
+
+        # 计算总数和分页
+        total = query.count()
+        page_size = request.pageSize if request.pageSize > 0 else 10
+        page_no = request.pageNo if request.pageNo > 0 else 1
+        pages = math.ceil(total / page_size)
+        
+        # 获取分页数据
+        users = query.offset((page_no - 1) * page_size).limit(page_size).all()
+        
+        # 构建返回数据
+        records = []
+        for user in users:
+            group_ids = [group.id for group in user.groups]
+            group_names = [group.name for group in user.groups]
+            role_names = [role.name for role in user.roles]
+            
+            record = UserDetailItem(
+                id=user.id,
+                username=user.username,
+                name=user.name,
+                status=user.status,
+                effectiveDay=user.effective_day,
+                expire=user.expire,
+                tenantId=user.tenant_id,
+                tenantName=user.tenant.name if user.tenant else "",
+                companyId=user.company_id,
+                companyName=user.company.name if user.company else "",
+                groupIds=group_ids,
+                groupNames=group_names,
+                roleNames=role_names,
+                createTime=user.create_time,
+                updateTime=user.update_time,
+                operatorName=user.operator_name
+            )
+            records.append(record)
+
+        return UserPageResponse(
+            code="00000",
+            msg="success",
+            data=UserPageData(
+                records=records,
+                total=total,
+                size=page_size,
+                current=page_no,
+                pages=pages
+            )
+        )
+    except Exception as e:
+        return UserPageResponse(
+            code="99999",
+            msg=str(e),
+            data=UserPageData(records=[], total=0, size=0, current=0, pages=0)
+        )
+
+@app.post("/ces/user/add", response_model=UserAddResponse)
+async def user_add(request: UserAddRequest, db: Session = Depends(get_db)):
+    try:
+        # 检查用户名是否已存在
+        if db.query(models.User).filter(models.User.username == request.username).first():
+            return UserAddResponse(code="99999", msg="用户名已存在", data={})
+
+        # 创建新用户
+        user = models.User(
+            username=request.username,
+            name=request.name,
+            company_id=request.companyId,
+            effective_day=request.effectiveDay,
+            status=1,
+            expire=1,
+            create_time=datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+            update_time=datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        )
+        
+        db.add(user)
+        db.commit()
+        db.refresh(user)
+        
+        return UserAddResponse(code="00000", msg="success", data={})
+    except Exception as e:
+        db.rollback()
+        return UserAddResponse(code="99999", msg=str(e), data={})
+
+@app.post("/ces/user/modify", response_model=UserModifyResponse)
+async def user_modify(request: UserModifyRequest, db: Session = Depends(get_db)):
+    try:
+        user = db.query(models.User).filter(models.User.id == request.id).first()
+        if not user:
+            return UserModifyResponse(code="99999", msg="用户不存在", data={})
+
+        user.name = request.name
+        user.effective_day = request.effectiveDay
+        user.update_time = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        
+        db.commit()
+        return UserModifyResponse(code="00000", msg="success", data={})
+    except Exception as e:
+        db.rollback()
+        return UserModifyResponse(code="99999", msg=str(e), data={})
+
+@app.post("/ces/user/modify/status", response_model=UserModifyResponse)
+async def user_modify_status(request: UserStatusRequest, db: Session = Depends(get_db)):
+    try:
+        # 查询用户是否存在
+        user = db.query(models.User).filter(models.User.id == request.id).first()
+        if not user:
+            return {
+                "code": "A0001",
+                "msg": f"用户ID {request.id} 不存在",
+                "data": {}
+            }
+        
+        # 更新用户状态
+        user.status = request.status
+        user.update_time = datetime.now()
+        db.commit()
+        
+        return {
+            "code": "00000",
+            "msg": "更新成功",
+            "data": {}
+        }
+    except Exception as e:
+        db.rollback()
+        return {
+            "code": "A0002",
+            "msg": f"更新失败: {str(e)}",
+            "data": {}
+        }
+
+@app.get("/ces/user/query/detail", response_model=UserDetailResponse)
+async def user_query_detail(userId: int, db: Session = Depends(get_db)):
+    try:
+        user = db.query(models.User).filter(models.User.id == userId).first()
+        if not user:
+            return UserDetailResponse(code="99999", msg="用户不存在", data={})
+
+        data = {
+            "id": user.id,
+            "username": user.username,
+            "name": user.name,
+            "companyName": user.company.name if user.company else "",
+            "tenantName": user.tenant.name if user.tenant else ""
+        }
+        
+        return UserDetailResponse(code="00000", msg="success", data=data)
+    except Exception as e:
+        return UserDetailResponse(code="99999", msg=str(e), data={})
+
+@app.post("/ces/user/configure/user_effectiveDay", response_model=UserModifyResponse)
+async def user_configure_effective_day(request: UserEffectiveDayRequest, db: Session = Depends(get_db)):
+    try:
+        user = db.query(models.User).filter(models.User.id == request.id).first()
+        if not user:
+            return UserModifyResponse(code="99999", msg="用户不存在", data={})
+
+        user.effective_day = request.effectiveDay
+        user.update_time = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        
+        db.commit()
+        return UserModifyResponse(code="00000", msg="success", data={})
+    except Exception as e:
+        db.rollback()
+        return UserModifyResponse(code="99999", msg=str(e), data={})
+
+@app.post("/ces/user/configure/user_group", response_model=UserModifyResponse)
+async def user_configure_group(request: UserGroupRequest, db: Session = Depends(get_db)):
+    try:
+        user = db.query(models.User).filter(models.User.id == request.id).first()
+        if not user:
+            return UserModifyResponse(code="99999", msg="用户不存在", data={})
+
+        # 清除原有班组
+        user.groups = []
+        
+        # 添加新班组
+        groups = db.query(models.Group).filter(models.Group.id.in_(request.groupIds)).all()
+        user.groups = groups
+        
+        db.commit()
+        return UserModifyResponse(code="00000", msg="success", data={})
+    except Exception as e:
+        db.rollback()
+        return UserModifyResponse(code="99999", msg=str(e), data={})
+
+@app.post("/ces/user/configure/user_role", response_model=UserModifyResponse)
+async def user_configure_role(request: UserRoleRequest, db: Session = Depends(get_db)):
+    try:
+        user = db.query(models.User).filter(models.User.id == request.id).first()
+        if not user:
+            return UserModifyResponse(code="99999", msg="用户不存在", data={})
+
+        # 清除原有角色
+        user.roles = []
+        
+        # 添加新角色
+        roles = db.query(models.Role).filter(models.Role.id.in_(request.roleIds)).all()
+        user.roles = roles
+        
+        db.commit()
+        return UserModifyResponse(code="00000", msg="success", data={})
+    except Exception as e:
+        db.rollback()
+        return UserModifyResponse(code="99999", msg=str(e), data={})
+
 if __name__ == "__main__":
     import uvicorn
     # 确保数据库中有测试用户
